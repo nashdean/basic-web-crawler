@@ -1,0 +1,2 @@
+setup:
+	./env.sh
