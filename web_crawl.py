@@ -51,7 +51,7 @@ def scrape_text_and_links_from_link(url):
         print(f"Error scraping {url}: {e}")
         return None, []
 
-def get_news_articles(query, num_pages=3):
+def get_news_articles(query: str = "What is webcrawling?", num_pages: int = 3):
     news_articles = []
 
     for page in range(num_pages):
