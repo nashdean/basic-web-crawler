@@ -30,6 +30,12 @@ def extract_names(text):
 
 def process_page_content(url, content):
     """Process the content of a page to extract text, links, and filter them."""
+    
+    # Ensure content is valid and of type string
+    if not content or not isinstance(content, str):
+        logging.error(f"Invalid content fetched from {url}")
+        return None, []
+
     soup = BeautifulSoup(content, 'html.parser')
 
     # Extract text from all <p> tags
@@ -48,17 +54,17 @@ def process_page_content(url, content):
     # print('Most Common Names:', most_common_names)
 
     # Extract links only from <a> tags within <p> tags
-    links = []
+    links = set()
     for p in soup.find_all('p'):
         for a in p.find_all('a', href=True):
             href = urljoin(url, a['href'])
 
             # Check if any of the names appear in the URL
             if any(name in href.lower() for name in most_common_names):
-                links.append(href)
+                links.add(href)
 
     logging.info(f'Returning {len(links)} Inner Links from {url}')
-    return text, links
+    return text, list(links)
 
 async def fetch(session, url):
     """Fetch a URL asynchronously."""
@@ -180,13 +186,14 @@ def crawl_links(starting_url, max_depth=2, visited=None):
         crawl_links(link, max_depth - 1, visited)
         # Decrease remaining links count and log progress
         links_remaining.acquire(1)
-        logging.info(f"Links remaining: {links_remaining._value}")
+        logging.info(f"Links remaining: {links_remaining._value}.  Completed '{link}' crawl.")
 
 def save_text_to_file(title, text):
     """Save text content to a file."""
     filename = "{}.txt".format(title[:50].replace(' ', '_'))  # Truncate title and replace spaces with underscores for filename
     path = os.path.join(os.getcwd(), 'output', filename)
     with open(path, 'w', encoding='utf-8') as file:
+        logging.info(f'Creating file "{path}"')
         file.write(text)
 
 if __name__ == "__main__":
