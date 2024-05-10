@@ -30,8 +30,6 @@ def extract_names(text):
 
 def process_page_content(url, content):
     """Process the content of a page to extract text, links, and filter them."""
-    
-    # Ensure content is valid and of type string
     if not content or not isinstance(content, str):
         logging.error(f"Invalid content fetched from {url}")
         return None, []
@@ -43,7 +41,6 @@ def process_page_content(url, content):
 
     # Extract person names from the text
     names_counter = extract_names(text)
-    # print('NAMES:',names_counter)
     if not names_counter:
         return text, []
 
@@ -51,20 +48,19 @@ def process_page_content(url, content):
     most_common_names = set(name.replace(" ", "").lower() for name in names_counter.keys())
     site_name = re.match(r'(http|https):\/\/(www\.)?(?P<base_url>[a-zA-Z0-9]*)\.', url)['base_url'].lower()
     most_common_names.discard(site_name)
-    # print('Most Common Names:', most_common_names)
 
-    # Extract links only from <a> tags within <p> tags
+    # Extract and filter links
     links = set()
     for p in soup.find_all('p'):
         for a in p.find_all('a', href=True):
             href = urljoin(url, a['href'])
 
-            # Check if any of the names appear in the URL
-            if any(name in href.lower() for name in most_common_names):
+            # Check if any of the names appear in the URL or anchor text
+            if any(name in href.lower() or name in href.lower() for name in most_common_names):
+                # if href in ALLOWED:
                 links.add(href)
-
     logging.info(f'Returning {len(links)} Inner Links from {url}')
-    return text, list(links)
+    return text, list(links)  # Convert to list for processing
 
 async def fetch(session, url):
     """Fetch a URL asynchronously."""
@@ -87,7 +83,8 @@ async def scrape_text_and_links(urls):
     with ProcessPoolExecutor() as executor:
         results = list(executor.map(process_page_content, [resp[0] for resp in responses], [resp[1] for resp in responses]))
         # print()
-        # print (results)
+        # print (results[0][1])
+        # print (results[1])
         # print()
     return results
 
@@ -146,20 +143,17 @@ def get_news_articles(query: str, start_date: str = None, end_date: str = None, 
 
     return news_articles
 
-def crawl_links(starting_url, max_depth=2, visited=None):
+def crawl_links(starting_url, current_depth = 0, max_depth=2, visited=None):
     """Recursively crawl links, scrape content, and save it."""
     global links_remaining  # Use the global counter
 
     if visited is None:
         visited = set()  # Initialize visited set
-        initial_depth = max_depth
-    else:
-        initial_depth = max_depth +1
 
-    if max_depth < 0 or starting_url in visited:
+    if current_depth > max_depth or starting_url in visited:
         return
 
-    logging.info(f'Currently {initial_depth - max_depth} links deep into crawl.')
+    logging.info(f'Currently {current_depth} links deep into crawl.')
     visited.add(starting_url)
 
     results = asyncio.run(scrape_text_and_links([starting_url]))
@@ -177,16 +171,24 @@ def crawl_links(starting_url, max_depth=2, visited=None):
     if len(links) > 0:
         # Add links to the remaining counter
         links_remaining.release(len(links))
+        logging.info(f"Added {len(links)} new links to process from {starting_url}")
     else:
         logging.info(f"No additional links found in '{starting_url}'.")
 
+    # Increment the depth for each recursive call
+    new_depth = current_depth + 1
+
     # Recursively crawl the extracted links
     for link in links:
-        time.sleep(2)  # Avoid rate-limiting
-        crawl_links(link, max_depth - 1, visited)
-        # Decrease remaining links count and log progress
-        links_remaining.acquire(1)
-        logging.info(f"Links remaining: {links_remaining._value}.  Completed '{link}' crawl.")
+        if max_depth > 0:
+            time.sleep(2)  # Avoid rate-limiting
+        crawl_links(link, new_depth, max_depth, visited)
+        
+        
+    # After all recursive calls, now we can safely decrement
+    if len(links) > 0:
+        links_remaining.acquire(len(links))
+        logging.info(f"Finished processing all links from {starting_url}. Remaining links count updated.")
 
 def save_text_to_file(title, text):
     """Save text content to a file."""
