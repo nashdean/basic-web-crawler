@@ -4,7 +4,7 @@ import os
 import time
 import aiohttp
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 import spacy  # Ensure spaCy is installed with `pip install spacy`
 from collections import Counter
 import re
@@ -29,38 +29,48 @@ def extract_names(text):
     return Counter(names)  # Return a counter of the most frequent names
 
 def process_page_content(url, content):
-    """Process the content of a page to extract text, links, and filter them."""
+    """Process the content of a page to extract text, structured by headers, links, and filter them."""
     if not content or not isinstance(content, str):
         logging.error(f"Invalid content fetched from {url}")
         return None, []
 
     soup = BeautifulSoup(content, 'html.parser')
 
-    # Extract text from all <p> tags
-    text = ' '.join([p.get_text() for p in soup.find_all('p')])
+    # Structure to hold text under headers
+    structured_text = []
+    headers_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+    all_text = soup.find_all(headers_tags + ['p'])  # Find all headers and paragraph tags
+
+    current_header = None
+    for element in all_text:
+        if element.name in headers_tags:
+            current_header = element.get_text()
+            structured_text.append((current_header, []))  # Start a new header section
+        elif element.name == 'p':
+            if structured_text:
+                structured_text[-1][1].append(element.get_text())
+            else:
+                structured_text.append(('No Header', [element.get_text()]))
+
+    # Flatten structured text and join paragraphs
+    flat_text = ' '.join(['\n\n'.join([header] + paras) for header, paras in structured_text])
 
     # Extract person names from the text
-    names_counter = extract_names(text)
-    if not names_counter:
-        return text, []
-
-    # Normalize and filter names
+    names_counter = extract_names(flat_text)
     most_common_names = set(name.replace(" ", "").lower() for name in names_counter.keys())
     site_name = re.match(r'(http|https):\/\/(www\.)?(?P<base_url>[a-zA-Z0-9]*)\.', url)['base_url'].lower()
     most_common_names.discard(site_name)
 
     # Extract and filter links
     links = set()
-    for p in soup.find_all('p'):
-        for a in p.find_all('a', href=True):
-            href = urljoin(url, a['href'])
+    for a in soup.find_all('a', href=True):
+        href = urljoin(url, a['href'])
+        if any(name in href.lower() or name in a.get_text().lower() for name in most_common_names):
+            links.add(href)
 
-            # Check if any of the names appear in the URL or anchor text
-            if any(name in href.lower() or name in href.lower() for name in most_common_names):
-                # if href in ALLOWED:
-                links.add(href)
-    logging.info(f'Returning {len(links)} Inner Links from {url}')
-    return text, list(links)  # Convert to list for processing
+    logging.info(f'Returning {len(links)} inner links from {url}')
+    return flat_text, list(links)  # Convert to list for processing
+
 
 async def fetch(session, url):
     """Fetch a URL asynchronously."""
@@ -75,7 +85,10 @@ async def fetch(session, url):
 
 async def scrape_text_and_links(urls):
     """Asynchronously scrape multiple URLs and process their content."""
-    async with aiohttp.ClientSession() as session:
+    headers = {
+    "X-No-Cache": "true"
+    }
+    async with aiohttp.ClientSession(headers=headers) as session:
         tasks = [fetch(session, url) for url in urls]
         responses = await asyncio.gather(*tasks)
 
@@ -142,6 +155,12 @@ def get_news_articles(query: str, start_date: str = None, end_date: str = None, 
             logging.error(f"Error fetching search results: {e}")
 
     return news_articles
+# def modify_url_for_api(url):
+#     ind = url.find('.')+1
+#     modified_url = url[ind:]
+#     # Correctly prefixing the Jina Reader API domain
+#     modified_url = 'https://r.jina.ai/' + modified_url
+#     return modified_url
 
 def crawl_links(starting_url, current_depth = 0, max_depth=2, visited=None):
     """Recursively crawl links, scrape content, and save it."""
@@ -156,9 +175,11 @@ def crawl_links(starting_url, current_depth = 0, max_depth=2, visited=None):
     logging.info(f'Currently {current_depth} links deep into crawl.')
     visited.add(starting_url)
 
+    # starting_url = modify_url_for_api(starting_url)
+
     results = asyncio.run(scrape_text_and_links([starting_url]))
     text, links = results[0]
-
+    # print(results)
     if text:
         # Use the parsed URL to form a filename-safe title
         title = urlparse(starting_url).path.replace('/', '_')
@@ -166,7 +187,7 @@ def crawl_links(starting_url, current_depth = 0, max_depth=2, visited=None):
         logging.info(f"Text from '{starting_url}' saved to file.")
     else:
         logging.error(f"Failed to scrape text from '{starting_url}'.")
-
+    
     # Check for and handle links count
     if len(links) > 0:
         # Add links to the remaining counter
@@ -178,11 +199,13 @@ def crawl_links(starting_url, current_depth = 0, max_depth=2, visited=None):
     # Increment the depth for each recursive call
     new_depth = current_depth + 1
 
-    # Recursively crawl the extracted links
-    for link in links:
-        if max_depth > 0:
-            time.sleep(2)  # Avoid rate-limiting
-        crawl_links(link, new_depth, max_depth, visited)
+    if new_depth <= max_depth:
+        # Recursively crawl the extracted links
+        for link in links:
+            # link = modify_url_for_api(link)
+            if max_depth > 0:
+                time.sleep(2)  # Avoid rate-limiting
+            crawl_links(link, new_depth, max_depth, visited)
         
         
     # After all recursive calls, now we can safely decrement
@@ -199,17 +222,18 @@ def save_text_to_file(title, text):
         file.write(text)
 
 if __name__ == "__main__":
-    query = 'Robert F. Kennedy Jr. education childhood'
-    articles = get_news_articles(query, num_pages=1)  # Fetch 1 page of search results
-    logging.info(f'Gathered {len(articles)} links on "{query}" from Google Search.')
-    logging.info('Initializing web crawling...')
-    for article in articles:
-        title = article['title']
-        link = article['link']
+    # query = 'Robert F. Kennedy Jr. education childhood'
+    # articles = get_news_articles(query, num_pages=1)  # Fetch 1 page of search results
+    # logging.info(f'Gathered {len(articles)} links on "{query}" from Google Search.')
+    # logging.info('Initializing web crawling...')
+    # for article in articles:
+    #     title = article['title']
+    #     link = article['link']
 
-        # Respect robots.txt rules by waiting a few seconds between requests
-        time.sleep(2)
+    #     # Respect robots.txt rules by waiting a few seconds between requests
+    #     time.sleep(2)
         
-        # Scrape text from the link
-        logging.info(f'Crawling "{title}"')
-        crawl_links(link)
+    #     # Scrape text from the link
+    #     logging.info(f'Crawling "{title}"')
+    #     crawl_links(link)
+    crawl_links('https://www.vanityfair.com/news/story/rfk-jr-says-his-brain-was-partially-eaten-by-a-worm-that-crawled-inside-and-died-everything-you-need-to-know')
