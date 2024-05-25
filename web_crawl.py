@@ -29,22 +29,29 @@ def extract_names(text):
     return Counter(names)  # Return a counter of the most frequent names
 
 def process_page_content(url, content):
-    """Process the content of a page to extract text, structured by headers, links, and filter them."""
+    """Process the content of a page to extract text, structured by headers in Markdown format, links, and filter them."""
     if not content or not isinstance(content, str):
         logging.error(f"Invalid content fetched from {url}")
         return None, []
 
     soup = BeautifulSoup(content, 'html.parser')
 
-    # Structure to hold text under headers
+    # Structure to hold text under Markdown headers
     structured_text = []
-    headers_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
-    all_text = soup.find_all(headers_tags + ['p'])  # Find all headers and paragraph tags
+    headers_tags = {
+        'h1': '# ',   # Markdown for header level 1
+        'h2': '## ',  # Markdown for header level 2
+        'h3': '### ', # Markdown for header level 3
+        'h4': '#### ',# Markdown for header level 4
+        'h5': '##### ',# Markdown for header level 5
+        'h6': '###### '# Markdown for header level 6
+    }
+    all_text = soup.find_all(list(headers_tags.keys()) + ['p'])  # Find all headers and paragraph tags
 
     current_header = None
     for element in all_text:
         if element.name in headers_tags:
-            current_header = element.get_text()
+            current_header = headers_tags[element.name] + element.get_text()
             structured_text.append((current_header, []))  # Start a new header section
         elif element.name == 'p':
             if structured_text:
@@ -53,7 +60,7 @@ def process_page_content(url, content):
                 structured_text.append(('No Header', [element.get_text()]))
 
     # Flatten structured text and join paragraphs
-    flat_text = ' '.join(['\n\n'.join([header] + paras) for header, paras in structured_text])
+    flat_text = '\n\n'.join(['\n'.join([header] + paras) for header, paras in structured_text])
 
     # Extract person names from the text
     names_counter = extract_names(flat_text)
