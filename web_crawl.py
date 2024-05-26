@@ -28,55 +28,52 @@ def extract_names(text):
     names = [ent.text for ent in doc.ents if ent.label_ == "PERSON"]
     return Counter(names)  # Return a counter of the most frequent names
 
-def process_page_content(url, content):
-    """Process the content of a page to extract text, structured by headers in Markdown format, links, and filter them."""
-    if not content or not isinstance(content, str):
-        logging.error(f"Invalid content fetched from {url}")
-        return None, []
-
-    soup = BeautifulSoup(content, 'html.parser')
-
-    # Structure to hold text under Markdown headers
+def extract_structured_text(soup, headers_tags):
     structured_text = []
-    headers_tags = {
-        'h1': '# ',   # Markdown for header level 1
-        'h2': '## ',  # Markdown for header level 2
-        'h3': '### ', # Markdown for header level 3
-        'h4': '#### ',# Markdown for header level 4
-        'h5': '##### ',# Markdown for header level 5
-        'h6': '###### '# Markdown for header level 6
-    }
-    all_text = soup.find_all(list(headers_tags.keys()) + ['p'])  # Find all headers and paragraph tags
+    all_text = soup.find_all(list(headers_tags.keys()) + ['p'])
 
     current_header = None
     for element in all_text:
         if element.name in headers_tags:
-            current_header = headers_tags[element.name] + element.get_text()
-            structured_text.append((current_header, []))  # Start a new header section
-        elif element.name == 'p':
-            if structured_text:
-                structured_text[-1][1].append(element.get_text())
-            else:
-                structured_text.append(('No Header', [element.get_text()]))
+            current_header = headers_tags[element.name] + element.get_text().strip()
+            structured_text.append((current_header, []))
+        elif element.name == 'p' and current_header:
+            structured_text[-1][1].append(element.get_text().strip())
 
-    # Flatten structured text and join paragraphs
-    flat_text = '\n\n'.join(['\n'.join([header] + paras) for header, paras in structured_text])
+    return structured_text
 
-    # Extract person names from the text
-    names_counter = extract_names(flat_text)
-    most_common_names = set(name.replace(" ", "").lower() for name in names_counter.keys())
-    site_name = re.match(r'(http|https):\/\/(www\.)?(?P<base_url>[a-zA-Z0-9]*)\.', url)['base_url'].lower()
-    most_common_names.discard(site_name)
+def flatten_text(structured_text):
+    return '\n\n'.join(['\n'.join([header] + paras) for header, paras in structured_text])
 
-    # Extract and filter links
+def extract_and_filter_links(soup, url, most_common_names):
     links = set()
     for a in soup.find_all('a', href=True):
         href = urljoin(url, a['href'])
         if any(name in href.lower() or name in a.get_text().lower() for name in most_common_names):
             links.add(href)
+    return links
 
+def process_page_content(url, content):
+    if not content or not isinstance(content, str):
+        logging.error(f"Invalid content fetched from {url}")
+        return None, []
+
+    soup = BeautifulSoup(content, 'html.parser')
+    headers_tags = {
+        'h1': '# ', 'h2': '## ', 'h3': '### ', 'h4': '#### ', 'h5': '##### ', 'h6': '###### '
+    }
+    
+    structured_text = extract_structured_text(soup, headers_tags)
+    flat_text = flatten_text(structured_text)
+    most_common_names = extract_names(flat_text)
+    most_common_names = set(name.replace(" ", "").lower() for name in most_common_names.keys())
+    site_name = re.match(r'(http|https):\/\/(www\.)?(?P<base_url>[a-zA-Z0-9]*)\.', url)['base_url'].lower()
+    most_common_names.discard(site_name)
+
+    links = extract_and_filter_links(soup, url, most_common_names)
     logging.info(f'Returning {len(links)} inner links from {url}')
-    return flat_text, list(links)  # Convert to list for processing
+
+    return flat_text, list(links)
 
 
 async def fetch(session, url):
@@ -93,20 +90,28 @@ async def fetch(session, url):
 async def scrape_text_and_links(urls):
     """Asynchronously scrape multiple URLs and process their content."""
     headers = {
-    "X-No-Cache": "true"
+        "X-No-Cache": "true"
     }
     async with aiohttp.ClientSession(headers=headers) as session:
         tasks = [fetch(session, url) for url in urls]
         responses = await asyncio.gather(*tasks)
 
+    # Prepare data for processing
+    urls_to_process = [resp[0] for resp in responses if resp[1] is not None]
+    contents_to_process = [resp[1] for resp in responses if resp[1] is not None]
+
     # Process content in parallel using a standalone function
+    loop = asyncio.get_running_loop()
     with ProcessPoolExecutor() as executor:
-        results = list(executor.map(process_page_content, [resp[0] for resp in responses], [resp[1] for resp in responses]))
-        # print()
-        # print (results[0][1])
-        # print (results[1])
-        # print()
+        # Define a function to handle the map operation
+        def process_contents():
+            return list(executor.map(process_page_content, urls_to_process, contents_to_process))
+
+        # Run the processing in an executor
+        results = await loop.run_in_executor(executor, process_contents)
+
     return results
+
 
 def get_news_articles(query: str, start_date: str = None, end_date: str = None, num_pages: int = 3):
     """
